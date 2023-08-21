@@ -14,6 +14,7 @@ from core.raft_stereo import RAFTStereo
 
 from evaluate_stereo import *
 import core.stereo_datasets as datasets
+from core.ns_loss import ns_loss
 
 try:
     from torch.cuda.amp import GradScaler
@@ -160,13 +161,22 @@ def train(args):
 
         for i_batch, (_, *data_blob) in enumerate(tqdm(train_loader)):
             optimizer.zero_grad()
-            image1, image2, flow, valid = [x.cuda() for x in data_blob]
 
-            assert model.training
-            flow_predictions = model(image1, image2, iters=args.train_iters)
-            assert model.training
+            data_blob = [x.cuda() for x in data_blob]
+            if len(data_blob) == 4:
+                image1, image2, flow, valid = data_blob
+                assert model.training
+                flow_predictions = model(image1, image2, iters=args.train_iters)
+                assert model.training
+                loss, metrics = sequence_loss(flow_predictions, flow, valid)
+            else:
+                image0, image1, image2, image1_aug, image2_aug, target_disp, conf = data_blob
+                assert model.training
+                pred_disps = model(image1_aug, image2_aug, iters=args.train_iters)
+                assert model.training
+                loss, metrics = ns_loss(pred_disps, target_disp, conf, image0, image1, image2, \
+                                        args.trinocular_loss, args.alpha_disp_loss, args.alpha_photometric, args.conf_threshold)
 
-            loss, metrics = sequence_loss(flow_predictions, flow, valid)
             logger.writer.add_scalar("live_loss", loss.item(), global_batch_num)
             logger.writer.add_scalar(f'learning_rate', optimizer.param_groups[0]['lr'], global_batch_num)
             global_batch_num += 1
@@ -185,9 +195,9 @@ def train(args):
                 logging.info(f"Saving file {save_path.absolute()}")
                 torch.save(model.state_dict(), save_path)
 
-                results = validate_things(model.module, iters=args.valid_iters)
+                #results = validate_things(model.module, iters=args.valid_iters)
 
-                logger.write_dict(results)
+                # logger.write_dict(results)
 
                 model.train()
                 model.module.freeze_bn()
@@ -213,16 +223,16 @@ def train(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--name', default='raft-stereo', help="name your experiment")
+    parser.add_argument('--name', default='nerf-supervised-raft-stereo', help="name your experiment")
     parser.add_argument('--restore_ckpt', help="restore checkpoint")
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
 
     # Training parameters
-    parser.add_argument('--batch_size', type=int, default=6, help="batch size used during training.")
-    parser.add_argument('--train_datasets', nargs='+', default=['sceneflow'], help="training datasets.")
+    parser.add_argument('--batch_size', type=int, default=2, help="batch size used during training.")
+    parser.add_argument('--train_datasets', nargs='+', default=['3nerf'], help="training datasets.")
     parser.add_argument('--lr', type=float, default=0.0002, help="max learning rate.")
-    parser.add_argument('--num_steps', type=int, default=100000, help="length of training schedule.")
-    parser.add_argument('--image_size', type=int, nargs='+', default=[320, 720], help="size of the random image crops used during training.")
+    parser.add_argument('--num_steps', type=int, default=200000, help="length of training schedule.")
+    parser.add_argument('--image_size', type=int, nargs='+', default=[384, 768], help="size of the random image crops used during training.")
     parser.add_argument('--train_iters', type=int, default=16, help="number of updates to the disparity field in each forward pass.")
     parser.add_argument('--wdecay', type=float, default=.00001, help="Weight decay in optimizer.")
 
@@ -246,6 +256,15 @@ if __name__ == '__main__':
     parser.add_argument('--do_flip', default=False, choices=['h', 'v'], help='flip the images horizontally or vertically')
     parser.add_argument('--spatial_scale', type=float, nargs='+', default=[0, 0], help='re-scale the images randomly')
     parser.add_argument('--noyjitter', action='store_true', help='don\'t simulate imperfect rectification')
+
+    # NeRF-Stero parameters
+    parser.add_argument('--datapath', default='datasets/NeRF-Stereo/training_set', help="dataset root path")
+    parser.add_argument('--training_file', default='datasets/NeRF-Stereo/trainingQ.txt', help="list of training samples")
+    parser.add_argument('--conf_threshold', type=float, default=0.5, help="threshold of AO")
+    parser.add_argument('--disp_threshold', type=int, default=512, help="max disp")
+    parser.add_argument('--trinocular_loss', default=True, help="use stereo triplet")
+    parser.add_argument('--alpha_disp_loss', type=float, default=1.0, help="weight of disparity loss")
+    parser.add_argument('--alpha_photometric', type=float, default=0.1, help="weight of photometric loss")
     args = parser.parse_args()
 
     torch.manual_seed(1234)

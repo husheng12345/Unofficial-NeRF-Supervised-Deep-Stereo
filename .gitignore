@@ -1,0 +1,13 @@
+# GitHub Python GitIgnore ----------------------------------------------------------------------------------------------
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+datasets/*
+runs/*
+checkpoints/*
+demo_output/*
+test_output/*
+
+*.json
