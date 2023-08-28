@@ -1,5 +1,8 @@
+# Unofficial NeRF-Supervised Deep Stereo
 This repository is an unofficial implementation of [NeRF-Supervised Deep Stereo (CVPR 2023)](https://arxiv.org/abs/2303.17603).<br/>
-Our code is mainly based on [NeRF-Supervised Deep Stereo code snippets](https://github.com/fabiotosi92/NeRF-Supervised-Deep-Stereo) and [RAFT-Stereo](https://github.com/princeton-vl/RAFT-Stereo).
+
+## Features
+* Integration of [NeRF-Supervised Deep Stereo code snippets](https://github.com/fabiotosi92/NeRF-Supervised-Deep-Stereo) and [RAFT-Stereo](https://github.com/princeton-vl/RAFT-Stereo) for easy training and evaluation.
 
 ## Required Data
 You can create symbolic links to wherever the datasets were downloaded in the `datasets` folder. 
@@ -8,6 +11,7 @@ You can create symbolic links to wherever the datasets were downloaded in the `d
     ├── KITTI
         ├── testing
         ├── training
+        ├── devkit
     ├── Middlebury
         ├── MiddEval3
     ├── NeRF-Stereo
@@ -44,9 +48,9 @@ Performance on KITTI 2015 and Middlebury v3:
 | Model                         | KITTI-15<br/>(>3px All)   | Midd-T Full<br/>(>2px All)    |
 | :---                          | :---:                     | :---:                         |
 | Official pretrained weights   | 5.41                      | 16.38                         |
-| Trained with this repo        | 6.06                      | 22.36                         |
+| Trained with this repository  | 6.12                      | 20.94                         |
 
-Note that there is a gap between our results and those derived from official pretrained weights. We are trying to fully reproduce the paper.
+Despite our best efforts to replicate the experimental setup as delineated in the paper, there exists a discrepancy between the model trained with this repository and the official pretrained weights.
 
 ## Acknowledgements
 

@@ -319,31 +319,32 @@ class SparseFlowAugmentor:
 
 class TripletFlowAugmentor:
     '''
-        reference: https://github.com/fabiotosi92/NeRF-Supervised-Deep-Stereo/issues/17#issuecomment-1676902502
+        reference: https://github.com/fabiotosi92/NeRF-Supervised-Deep-Stereo/issues/22#issuecomment-1687742717
     '''
-    def __init__(self, crop_size, min_scale=-0.2, max_scale=0.5, do_flip=False, yjitter=False, saturation_range=[0.7,1.3], gamma=[1,1,1,1]):
+    def __init__(self, crop_size, min_scale=-0.2, max_scale=0.5, do_flip=True, yjitter=False, saturation_range=[0.6,1.4], gamma=[1,1,1,1]):
+
         # spatial augmentation params
         self.crop_size = crop_size
         self.min_scale = min_scale
         self.max_scale = max_scale
-        self.spatial_aug_prob = 0.8
+        self.spatial_aug_prob = 1.0
         self.stretch_prob = 0.8
         self.max_stretch = 0.2
 
         # flip augmentation params
+        self.yjitter = yjitter
         self.do_flip = do_flip
         self.h_flip_prob = 0.5
         self.v_flip_prob = 0.1
 
         # photometric augmentation params
-        self.photo_aug = Compose([ColorJitter(brightness=0.3, contrast=0.3, saturation=saturation_range, hue=0.3/3.14), AdjustGamma(*gamma)])
+        self.photo_aug = Compose([ColorJitter(brightness=0.4, contrast=0.4, saturation=saturation_range, hue=0.5/3.14), AdjustGamma(*gamma)])
         self.asymmetric_color_aug_prob = 0.2
         self.eraser_aug_prob = 0.5
 
-        # RandomVdisp params
-        self.angle = 0.1
-        self.px = 2
-        
+        # transform images into grayscale
+        self.grayscale_prob = 0.1
+
     def color_transform(self, img0, img1, img2):
         """ Photometric augmentation """
 
@@ -360,164 +361,121 @@ class TripletFlowAugmentor:
             img0, img1, img2 = np.split(image_stack, 3, axis=0)
 
         return img0, img1, img2
-    
-    def eraser_transform(self, img0, img1, img2, bounds=[50, 100]):
-        """ Occlusion augmentation """
 
-        ht, wd = img1.shape[:2]
-        if np.random.rand() < self.eraser_aug_prob:
-            mean_color0 = np.mean(img0.reshape(-1, 3), axis=0)
-            mean_color2 = np.mean(img2.reshape(-1, 3), axis=0)
-            for _ in range(np.random.randint(1, 3)):
-                x0 = np.random.randint(0, wd)
-                y0 = np.random.randint(0, ht)
-                dx = np.random.randint(bounds[0], bounds[1])
-                dy = np.random.randint(bounds[0], bounds[1])
-                img0[y0:y0+dy, x0:x0+dx, :] = mean_color0
-                img2[y0:y0+dy, x0:x0+dx, :] = mean_color2
+    def random_vertical_disp(self, inputs, angle, px, diff_angle=0, order=2, reshape=False):
+        px2 = random.uniform(-px,px)
+        angle2 = random.uniform(-angle,angle)
 
-        return img0, img1, img2
+        image_center = (np.random.uniform(0,inputs[1].shape[0]),\
+                             np.random.uniform(0,inputs[1].shape[1]))
+        rot_mat = cv2.getRotationMatrix2D(image_center, angle2, 1.0)
+        inputs[1] = cv2.warpAffine(inputs[1], rot_mat, inputs[1].shape[1::-1], flags=cv2.INTER_LINEAR)
+        trans_mat = np.float32([[1,0,0],[0,1,px2]])
+        inputs[1] = cv2.warpAffine(inputs[1], trans_mat, inputs[1].shape[1::-1], flags=cv2.INTER_LINEAR)
+        return inputs
 
-    def RandomVdisp(self, img0, img1, img2):
-        if np.random.binomial(1,0.5):
-            px2 = random.uniform(-self.px, self.px)
-            angle2 = random.uniform(-self.angle, self.angle)
+    # gt already filtered based on AO
+    def spatial_transform(self, im1, im2, im3, gt=None, conf=None):
 
-            image_center = (np.random.uniform(0, img2.shape[0]), np.random.uniform(0, img2.shape[1]))
-            rot_mat = cv2.getRotationMatrix2D(image_center, angle2, 1.0)
-            trans_mat = np.float32([[1, 0, 0], [0, 1, px2]])
-
-            img0 = cv2.warpAffine(img0, rot_mat, img0.shape[1::-1], flags=cv2.INTER_LINEAR)
-            img0 = cv2.warpAffine(img0, trans_mat, img0.shape[1::-1], flags=cv2.INTER_LINEAR)
-
-            img2 = cv2.warpAffine(img2, rot_mat, img2.shape[1::-1], flags=cv2.INTER_LINEAR)
-            img2 = cv2.warpAffine(img2, trans_mat, img2.shape[1::-1], flags=cv2.INTER_LINEAR)
-
-        return img0, img1, img2
-
-    def resize_sparse_flow_map(self, flow, valid, fx=1.0, fy=1.0):
-        ht, wd = flow.shape[:2]
-        coords = np.meshgrid(np.arange(wd), np.arange(ht))
-        coords = np.stack(coords, axis=-1)
-
-        coords = coords.reshape(-1, 2).astype(np.float32)
-        flow = flow.reshape(-1, 2).astype(np.float32)
-        valid = valid.reshape(-1).astype(np.float32)
-
-        coords0 = coords[valid>=1]
-        flow0 = flow[valid>=1]
-
-        ht1 = int(round(ht * fy))
-        wd1 = int(round(wd * fx))
-
-        coords1 = coords0 * [fx, fy]
-        flow1 = flow0 * [fx, fy]
-
-        xx = np.round(coords1[:,0]).astype(np.int32)
-        yy = np.round(coords1[:,1]).astype(np.int32)
-
-        v = (xx > 0) & (xx < wd1) & (yy > 0) & (yy < ht1)
-        xx = xx[v]
-        yy = yy[v]
-        flow1 = flow1[v]
-
-        flow_img = np.zeros([ht1, wd1, 2], dtype=np.float32)
-        valid_img = np.zeros([ht1, wd1], dtype=np.int32)
-
-        flow_img[yy, xx] = flow1
-        valid_img[yy, xx] = 1
-
-        return flow_img, valid_img
-
-    def spatial_transform(self, img0, img1, img2, img0_aug, img1_aug, img2_aug, flow, conf):
         # randomly sample scale
-
-        ht, wd = img1.shape[:2]
+        ht, wd = im2.shape[:2]
         min_scale = np.maximum(
-            (self.crop_size[0] + 1) / float(ht), 
-            (self.crop_size[1] + 1) / float(wd))
+            (self.crop_size[0] + 8) / float(ht), 
+            (self.crop_size[1] + 8) / float(wd))
 
         scale = 2 ** np.random.uniform(self.min_scale, self.max_scale)
-        scale_x = np.clip(scale, min_scale, None)
-        scale_y = np.clip(scale, min_scale, None)
+        scale_x = scale
+        scale_y = scale
+
+        if np.random.rand() < self.stretch_prob:
+            scale_x *= 2 ** np.random.uniform(-self.max_stretch, self.max_stretch)
+            scale_y *= 2 ** np.random.uniform(-self.max_stretch, self.max_stretch)
+        
+        scale_x = np.clip(scale_x, min_scale, None)
+        scale_y = np.clip(scale_y, min_scale, None)
 
         if np.random.rand() < self.spatial_aug_prob:
             # rescale the images
-            img0 = cv2.resize(img0, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
-            img1 = cv2.resize(img1, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
-            img2 = cv2.resize(img2, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
-            img0_aug = cv2.resize(img0_aug, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
-            img1_aug = cv2.resize(img1_aug, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
-            img2_aug = cv2.resize(img2_aug, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
-            conf = cv2.resize(conf, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
+            im1 = cv2.resize(im1, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
+            im2 = cv2.resize(im2, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
+            im3 = cv2.resize(im3, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
 
-            valid = np.where(flow!=0., 1, 0)
-            flow = np.stack([flow, np.zeros_like(flow)], axis=-1)
-            flow, valid = self.resize_sparse_flow_map(flow, valid, fx=scale_x, fy=scale_y)
-            flow = flow[:,:,0]
-            del valid
+            if gt is not None:
+                gt = cv2.resize(gt, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_NEAREST) * scale_x
+                conf = cv2.resize(conf, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_NEAREST)
 
         if self.do_flip:
             if np.random.rand() < self.h_flip_prob: # h-flip
-                tmp = img0[:, ::-1]
-                img0 = img2[:, ::-1]
-                img2 = tmp
-                img1 = img1[:, ::-1]
+                tmp_left = im1[:, ::-1]
+                tmp_center = im2[:, ::-1]
+                tmp_right = im3[:, ::-1]
+                im1 = tmp_right
+                im2 = tmp_center
+                im3 = tmp_left
 
-                tmp = img0_aug[:, ::-1]
-                img0_aug = img2_aug[:, ::-1]
-                img2_aug = tmp
-                img1_aug = img1_aug[:, ::-1]
-
-                flow = flow[:, ::-1]
-                conf = conf[:, ::-1]
+                if gt is not None:
+                    gt = gt[:, ::-1]
+                    conf = conf[:, ::-1]
 
             if np.random.rand() < self.v_flip_prob: # v-flip
-                img0 = img0[::-1, :]
-                img1 = img1[::-1, :]
-                img2 = img2[::-1, :]
+                im1 = im1[::-1, :]
+                im2 = im2[::-1, :]
+                im3 = im3[::-1, :]
 
-                img0_aug = img0_aug[::-1, :]
-                img1_aug = img1_aug[::-1, :]
-                img2_aug = img2_aug[::-1, :]
+                if gt is not None:
+                    gt = gt[::-1, :]
+                    conf = conf[::-1, :]
 
-                flow = flow[::-1, :]
-                conf = conf[::-1, :]
+        # allow full size crops
+        y0 = np.random.randint(2, im2.shape[0] - self.crop_size[0]-2)                  
+        x0 = np.random.randint(2, im2.shape[1] - self.crop_size[1]-2)
 
-        margin_y = 20
-        margin_x = 50
+        y1 = y0 + np.random.randint(-2, 2 + 1)
 
-        y0 = np.random.randint(0, img1.shape[0] - self.crop_size[0] + margin_y)
-        x0 = np.random.randint(-margin_x, img1.shape[1] - self.crop_size[1] + margin_x)
+        im1_o = im1[:,:,:3][y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]        
+        im2_o = im2[:,:,:3][y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
+        im3_o = im3[:,:,:3][y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
 
-        y0 = np.clip(y0, 0, img1.shape[0] - self.crop_size[0])
-        x0 = np.clip(x0, 0, img1.shape[1] - self.crop_size[1])
+        im1_aug = im1[:,:,3:6][y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]        
+        im2_aug = im2[:,:,3:6][y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
+        im3_aug = im3[:,:,3:6][y1:y1+self.crop_size[0], x0:x0+self.crop_size[1]]
 
-        img0 = img0[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
-        img1 = img1[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
-        img2 = img2[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
-        img0_aug = img0_aug[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
-        img1_aug = img1_aug[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
-        img2_aug = img2_aug[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
-        flow = flow[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
-        conf = conf[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
-        return img0, img1, img2, img0_aug, img1_aug, img2_aug, flow, conf
+        im1 = np.concatenate((im1_o,im1_aug),-1) 
+        im2 = np.concatenate((im2_o,im2_aug),-1) 
+        im3 = np.concatenate((im3_o,im3_aug),-1) 
+  
+        if gt is not None:
+            gt = gt[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
+            conf = conf[y0:y0+self.crop_size[0], x0:x0+self.crop_size[1]]
 
+        angle=0;px=0
+        if np.random.binomial(1,0.5):
+            angle=0.1;px=3
+            
+        augmented = self.random_vertical_disp([im2[:,:,3:6], im3[:,:,3:6]], angle, px)
 
-    def __call__(self, img0, img1, img2, flow, conf):
-        img0_aug, img1_aug, img2_aug = self.color_transform(img0, img1, img2)
-        img0_aug, img1_aug, img2_aug = self.RandomVdisp(img0_aug, img1_aug, img2_aug)
-        img0_aug, img1_aug, img2_aug = self.eraser_transform(img0_aug, img1_aug, img2_aug)
-        # img0, img1, and img2 are used for photometric loss
-        img0, img1, img2, img0_aug, img1_aug, img2_aug, flow, conf = self.spatial_transform(img0, img1, img2, img0_aug, img1_aug, img2_aug, flow, conf)
+        # random occlusion to right image
+        if np.random.rand() < self.eraser_aug_prob:
+            sx = int(np.random.uniform(50, 100))
+            sy = int(np.random.uniform(50, 100))
+            cx = int(np.random.uniform(sx, im3.shape[0] - sx))
+            cy = int(np.random.uniform(sy, im3.shape[1] - sy))
+            augmented[1][cx - sx : cx + sx, cy - sy : cy + sy] = np.mean(
+                np.mean(augmented[1], 0), 0
+            )[np.newaxis, np.newaxis]
 
-        img0 = np.ascontiguousarray(img0)
-        img1 = np.ascontiguousarray(img1)
-        img2 = np.ascontiguousarray(img2)
-        img0_aug = np.ascontiguousarray(img0_aug)
-        img1_aug = np.ascontiguousarray(img1_aug)
-        img2_aug = np.ascontiguousarray(img2_aug)
-        flow = np.ascontiguousarray(flow)
-        conf = np.ascontiguousarray(conf)
+        im2 = np.concatenate((im2[:,:,:3],augmented[0]),-1) 
+        im3 = np.concatenate((im3[:,:,:3],augmented[1]),-1) 
 
-        return {'im0': img0, 'im1': img1, 'im2': img2, 'im0_aug': img0_aug, 'im1_aug': img1_aug, 'im2_aug': img2_aug, 'disp': flow, 'conf': conf}
+        return im1, im2, im3, gt, conf
+        
+    def __call__(self, im0, im1, im2, gt=None, conf=None):
+        
+        im0c, im1c, im2c = self.color_transform(im0, im1, im2)
+        im0, im1, im2, gt, conf = self.spatial_transform(np.concatenate((im0,im0c),-1), np.concatenate((im1,im1c),-1), np.concatenate((im2,im2c),-1), gt, conf)
+
+        if np.random.rand() < self.grayscale_prob:
+            im1[:,:,3:6] = np.stack((cv2.cvtColor(im1[:,:,3:6], cv2.COLOR_BGR2GRAY),)*3, axis=-1)
+            im2[:,:,3:6] = np.stack((cv2.cvtColor(im2[:,:,3:6], cv2.COLOR_BGR2GRAY),)*3, axis=-1)
+
+        return {'im0': im0[:,:,:3], 'im1': im1[:,:,:3], 'im2': im2[:,:,:3], 'im0_aug': im0[:,:,3:6], 'im1_aug': im1[:,:,3:6], 'im2_aug': im2[:,:,3:6], 'disp': gt, 'conf': conf}
