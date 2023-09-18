@@ -75,7 +75,7 @@ def run(model, data, args):
     if args.model == 'psmnet':
         pred_disp = pred_disps[0]
     elif args.model == 'raft-stereo':
-        pred_disp = pred_disps[-1].squeeze()
+        pred_disp = -pred_disps[-1].squeeze()
 
     ht, wd = pred_disp.shape[-2:]
     c = [_pad[2], ht - _pad[3], _pad[0], wd - _pad[1]]

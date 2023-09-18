@@ -159,23 +159,38 @@ def train(args):
     global_batch_num = 0
     while should_keep_training:
 
-        for i_batch, (_, *data_blob) in enumerate(tqdm(train_loader)):
+        for i_batch, (data_blob, nb, nt) in enumerate(tqdm(train_loader)):
             optimizer.zero_grad()
+            image1, image2 = data_blob['im1_forward'].cuda(), data_blob['im2_forward'].cuda()
 
-            data_blob = [x.cuda() for x in data_blob]
-            if len(data_blob) == 4:
-                image1, image2, flow, valid = data_blob
-                assert model.training
-                flow_predictions = model(image1, image2, iters=args.train_iters)
-                assert model.training
-                loss, metrics = sequence_loss(flow_predictions, flow, valid)
-            else:
-                image0, image1, image2, image1_aug, image2_aug, target_disp, conf = data_blob
-                assert model.training
-                pred_disps = model(image1_aug, image2_aug, iters=args.train_iters)
-                assert model.training
-                loss, metrics = ns_loss(pred_disps, target_disp, conf, image0, image1, image2, \
-                                        args.trinocular_loss, args.alpha_disp_loss, args.alpha_photometric, args.conf_threshold)
+            assert model.training
+            flow_predictions = model(image1, image2, iters=args.train_iters)
+            assert model.training
+
+            loss = torch.zeros(1).cuda()
+            metrics = {
+                'epe': 0.,
+                '1px': 0.,
+                '3px': 0.,
+                '5px': 0.,
+            }
+            if nb:
+                bi_flow_predictions = [x[:nb] for x in flow_predictions]
+                bi_loss, bi_metrics = sequence_loss(bi_flow_predictions, data_blob['bi']['flow'].cuda(), data_blob['bi']['valid'].cuda())
+                loss += bi_loss * nb
+                for k in metrics:
+                    metrics[k] += bi_metrics[k] * nb
+            if nt:
+                tri_flow_predictions = [x[nb:] for x in flow_predictions]
+                tri_loss, tri_metrics = ns_loss(tri_flow_predictions, data_blob['tri']['flow'].cuda(), data_blob['tri']['conf'].cuda(), \
+                                                data_blob['tri']['im0'].cuda(), data_blob['tri']['im1'].cuda(), data_blob['tri']['im2'].cuda(), \
+                                                args.trinocular_loss, args.alpha_disp_loss, args.alpha_photometric, args.conf_threshold)
+                loss += tri_loss * nt
+                for k in metrics:
+                    metrics[k] += tri_metrics[k] * nt
+            loss /= nb + nt
+            for k in metrics:
+                metrics[k] /= nb + nt
 
             logger.writer.add_scalar("live_loss", loss.item(), global_batch_num)
             logger.writer.add_scalar(f'learning_rate', optimizer.param_groups[0]['lr'], global_batch_num)
@@ -195,9 +210,9 @@ def train(args):
                 logging.info(f"Saving file {save_path.absolute()}")
                 torch.save(model.state_dict(), save_path)
 
-                #results = validate_things(model.module, iters=args.valid_iters)
+                results = validate_kitti(model.module, iters=args.valid_iters)
 
-                # logger.write_dict(results)
+                logger.write_dict(results)
 
                 model.train()
                 model.module.freeze_bn()

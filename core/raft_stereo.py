@@ -133,7 +133,7 @@ class RAFTStereo(nn.Module):
                 flow_up = self.upsample_flow(coords1 - coords0, up_mask)
             flow_up = flow_up[:,:1]
 
-            flow_predictions.append(-flow_up)   # only for NeRF-Supervised
+            flow_predictions.append(flow_up)
 
         if test_mode:
             return coords1 - coords0, flow_up

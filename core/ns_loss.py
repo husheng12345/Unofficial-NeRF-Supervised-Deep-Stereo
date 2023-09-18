@@ -124,7 +124,10 @@ def image_loss(disp, im1, im2, im3, uncertainty, trinocular=True):
         return binocular_loss(disp, im2, im3, uncertainty)
 
 def ns_loss(pred_disps, target_disp, conf, im0, im1, im2, trinocular_loss=True, alpha_disp_loss=1.0, alpha_photometric=0.1, conf_threshold=0.5):
-    conf = conf * (target_disp > 0).float()
+    '''
+        pred_disps and target_disp are negative here
+    '''
+    conf = conf * (target_disp < 0).float()
 
     n_predictions = len(pred_disps)
     loss_gamma = 0.9
@@ -140,7 +143,7 @@ def ns_loss(pred_disps, target_disp, conf, im0, im1, im2, trinocular_loss=True, 
         i_weight = adjusted_loss_gamma ** (n_predictions - i - 1)
         
         disp_diff = torch.abs(pred_disps[i] - target_disp)
-        disp_loss += i_weight * (disp_diff * conf * (target_disp > 0).float()).mean()
+        disp_loss += i_weight * (disp_diff * conf.unsqueeze(1)).mean()
         
         if alpha_photometric != 0.:
             photometric_loss += i_weight * image_loss(pred_disps[i], im0, im1, im2, 1 - conf, trinocular_loss)
@@ -150,7 +153,7 @@ def ns_loss(pred_disps, target_disp, conf, im0, im1, im2, trinocular_loss=True, 
     loss = alpha_disp_loss * disp_loss + alpha_photometric * photometric_loss
 
     epe = torch.sum((pred_disps[-1] - target_disp)**2, dim=1).sqrt()
-    epe = epe.view(-1)[(conf>conf_threshold).view(-1)]
+    epe = epe.view(-1)[(conf > conf_threshold).view(-1)]
 
     metrics = {
         'epe': epe.mean().item(),

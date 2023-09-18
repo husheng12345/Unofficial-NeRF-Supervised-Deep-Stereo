@@ -350,11 +350,44 @@ class NS_Data(data.Dataset):
                     augm_data[k] = torch.from_numpy(augm_data[k].copy()).float() 
 
         # augm_data['im0_aug'] is unused
-        return self.image_list[index][0], augm_data['im0'], augm_data['im1'], augm_data['im2'], \
-               augm_data['im1_aug'], augm_data['im2_aug'], augm_data['disp'], augm_data['conf']
+        return self.image_list[index][0], augm_data['im1_aug'], augm_data['im2_aug'], -augm_data['disp'], augm_data['conf'], \
+                    augm_data['im0'], augm_data['im1'], augm_data['im2']
 
     def __len__(self):
         return len(self.image_list)
+
+    @staticmethod
+    def collate_fn(batch):
+        '''This function is used to enable joint training with binocular and trinocular data.'''
+
+        tri_idx = [i for i in range(len(batch)) if len(batch[i]) == 8]
+        bi_idx = [i for i in range(len(batch)) if len(batch[i]) == 5]
+        nt, nb = len(tri_idx), len(bi_idx)
+        assert nt + nb == len(batch)
+
+        data = {'im1_forward': None, 'im2_forward': None, 'bi': {}, 'tri': {}}
+        if nb:
+            _, im1_forward, im2_forward, flow, valid = zip(*[batch[i] for i in bi_idx])
+            data['im1_forward'] = torch.stack(im1_forward, dim=0)
+            data['im2_forward'] = torch.stack(im2_forward, dim=0)
+
+            data['bi']['flow'] = torch.stack(flow, dim=0)
+            data['bi']['valid'] = valid = torch.stack(valid, dim=0)
+        if nt:
+            _, im1_forward, im2_forward, flow, conf, im0, im1, im2 =  zip(*[batch[i] for i in tri_idx])
+            if data['im1_forward'] is None:
+                data['im1_forward'] = torch.stack(im1_forward, dim=0)
+                data['im2_forward'] = torch.stack(im2_forward, dim=0)
+            else:
+                data['im1_forward'] = torch.cat((data['im1_forward'], torch.stack(im1_forward, dim=0)), dim=0)
+                data['im2_forward'] = torch.cat((data['im2_forward'], torch.stack(im2_forward, dim=0)), dim=0)
+            data['tri']['flow'] = torch.stack(flow, dim=0)
+            data['tri']['conf'] = torch.stack(conf, dim=0)
+            data['tri']['im0'] = torch.stack(im0, dim=0)
+            data['tri']['im1'] = torch.stack(im1, dim=0)
+            data['tri']['im2'] = torch.stack(im2, dim=0)
+
+        return data, nb, nt
 
 
 def fetch_dataloader(args):
@@ -390,15 +423,15 @@ def fetch_dataloader(args):
             new_dataset = TartanAir(aug_params, keywords=dataset_name.split('_')[2:])
             logging.info(f"Adding {len(new_dataset)} samples from Tartain Air")
         elif dataset_name == '3nerf':
-            aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.5, 'do_flip': True}
+            ns_aug_params = {'crop_size': args.image_size, 'min_scale': -0.2, 'max_scale': 0.5, 'do_flip': True}
             new_dataset = NS_Data(
                 args.datapath, args.training_file, conf_threshold=args.conf_threshold, disp_threshold=args.disp_threshold,
-                aug_params=aug_params
+                aug_params=ns_aug_params
             )
         train_dataset = new_dataset if train_dataset is None else train_dataset + new_dataset
 
     train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, 
-        pin_memory=True, shuffle=True, num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 6))-2, drop_last=True)
+        pin_memory=True, shuffle=True, num_workers=int(os.environ.get('SLURM_CPUS_PER_TASK', 6))-2, collate_fn=NS_Data.collate_fn, drop_last=True)
 
     logging.info('Training with %d image pairs' % len(train_dataset))
     return train_loader
