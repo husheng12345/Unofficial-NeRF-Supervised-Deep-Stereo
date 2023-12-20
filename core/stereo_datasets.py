@@ -287,7 +287,6 @@ class NS_Data(data.Dataset):
         self.scale=scale
         self.disp_threshold = disp_threshold
         self.conf_threshold = conf_threshold
-        self.disp_list = []
         self.image_list = []
 
         training_file = open(training_file, 'r')
@@ -353,6 +352,11 @@ class NS_Data(data.Dataset):
         return self.image_list[index][0], augm_data['im1_aug'], augm_data['im2_aug'], -augm_data['disp'], augm_data['conf'], \
                     augm_data['im0'], augm_data['im1'], augm_data['im2']
 
+    def __mul__(self, v):
+        copy_of_self = copy.deepcopy(self)
+        copy_of_self.image_list = v * copy_of_self.image_list
+        return copy_of_self    
+
     def __len__(self):
         return len(self.image_list)
 
@@ -372,7 +376,7 @@ class NS_Data(data.Dataset):
             data['im2_forward'] = torch.stack(im2_forward, dim=0)
 
             data['bi']['flow'] = torch.stack(flow, dim=0)
-            data['bi']['valid'] = valid = torch.stack(valid, dim=0)
+            data['bi']['valid'] = torch.stack(valid, dim=0)
         if nt:
             _, im1_forward, im2_forward, flow, conf, im0, im1, im2 =  zip(*[batch[i] for i in tri_idx])
             if data['im1_forward'] is None:
@@ -428,6 +432,7 @@ def fetch_dataloader(args):
                 args.datapath, args.training_file, conf_threshold=args.conf_threshold, disp_threshold=args.disp_threshold,
                 aug_params=ns_aug_params
             )
+            logging.info(f"Adding {len(new_dataset)} samples from 3nerf")
         train_dataset = new_dataset if train_dataset is None else train_dataset + new_dataset
 
     train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, 
